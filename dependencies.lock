@@ -1,0 +1,27 @@
+dependencies:
+  cmd_system:
+    dependencies: []
+    source:
+      path: C:\esp\v5.5.2\esp-idf\examples\system\console\advanced\components\cmd_system
+      type: local
+    version: '*'
+  h2zero/esp-libtelnet:
+    component_hash: 1d37b740fd2393b30db835bd6b6c604f21c57bb23b54b942e349c499c983b952
+    dependencies:
+    - name: idf
+      version: '>=4.0'
+    source:
+      git: https://github.com/h2zero/esp-libtelnet
+      path: .
+      type: git
+    version: 0d3d887c6cc49aafd1f685a4ae8424fb725be58a
+  idf:
+    source:
+      type: idf
+    version: 5.5.2
+direct_dependencies:
+- cmd_system
+- h2zero/esp-libtelnet
+manifest_hash: 34e1a913cd4d9c587c6c9e5ed2d7832323bf8942251e6219a21e8a1b7f01d8a3
+target: esp32
+version: 2.0.0
