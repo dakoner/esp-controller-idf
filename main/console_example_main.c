@@ -305,7 +305,6 @@ static void IRAM_ATTR gpio_isr_handler(void* arg)
     
     gpio_set_level(13, 1);
     if (pulse_off_timer) {
-        esp_timer_stop(pulse_off_timer);
         esp_timer_start_once(pulse_off_timer, 1000);
     }
 
