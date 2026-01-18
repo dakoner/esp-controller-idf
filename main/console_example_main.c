@@ -58,12 +58,6 @@ static char wifi_password[64] = {0};
 
 static const char *TAG = "led";
 
-static esp_timer_handle_t pulse_off_timer = NULL;
-
-static void pulse_off_callback(void* arg) {
-    gpio_set_level(13, 0);
-}
-
 static struct {
     struct arg_int *pin;
     struct arg_int *value;
@@ -189,10 +183,11 @@ static int pwm(int argc, char **argv)
     ledc_timer_config_t timer_conf = {
         .speed_mode = LEDC_HIGH_SPEED_MODE,
         .timer_num = LEDC_TIMER_0,
-        .duty_resolution = LEDC_TIMER_10_BIT,
+        .duty_resolution = LEDC_TIMER_6_BIT,
         .freq_hz = frequency,
         .clk_cfg = LEDC_AUTO_CLK
     };
+    ESP_LOGI(TAG, "Configuring timer with duty_resolution=%d", timer_conf.duty_resolution);
     esp_err_t err = ledc_timer_config(&timer_conf);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "ledc_timer_config failed: %s", esp_err_to_name(err));
@@ -213,7 +208,7 @@ static int pwm(int argc, char **argv)
         return 1;
     }
 
-    uint32_t duty_val = (1023 * duty) / 99;
+    uint32_t duty_val = (63 * duty) / 99;
     ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0, duty_val);
     ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0);
 
@@ -289,10 +284,16 @@ static void gpio_task_example(void* arg)
     gpio_event_t evt;
     for(;;) {
         if(xQueueReceive(gpio_evt_queue, &evt, portMAX_DELAY)) {
-            printf("GPIO[%"PRIu32"] intr, val: %d, edge: %s\n", evt.gpio_num, evt.level, evt.level ? "RISING" : "FALLING");
+            ESP_LOGI(TAG, "GPIO[%"PRIu32"] intr, val: %d, edge: %s", evt.gpio_num, evt.level, evt.level ? "RISING" : "FALLING");
         }
     }
 }
+
+typedef struct {
+    int pin_to_pulse;
+    int pulse_width_us;
+} interrupt_pulse_config_t;
+static interrupt_pulse_config_t interrupt_pulse_configs[GPIO_NUM_MAX] = {{0}};
 
 static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
@@ -302,18 +303,21 @@ static void IRAM_ATTR gpio_isr_handler(void* arg)
         .gpio_num = gpio_num,
         .level = level
     };
-    
-    gpio_set_level(13, 1);
-    if (pulse_off_timer) {
-        esp_timer_start_once(pulse_off_timer, 1000);
-    }
-
     xQueueSendFromISR(gpio_evt_queue, &evt, NULL);
+
+    // New pulsing logic from ISR
+    if (interrupt_pulse_configs[gpio_num].pulse_width_us > 0) {
+        gpio_set_level(interrupt_pulse_configs[gpio_num].pin_to_pulse, 1);
+        esp_rom_delay_us(interrupt_pulse_configs[gpio_num].pulse_width_us);
+        gpio_set_level(interrupt_pulse_configs[gpio_num].pin_to_pulse, 0);
+    }
 }
 
 static struct {
     struct arg_int *pin;
     struct arg_str *edge;
+    struct arg_int *pintopulse;
+    struct arg_int *pulsewidth;
     struct arg_end *end;
 } interrupt_args;
 
@@ -327,6 +331,9 @@ static int interrupt(int argc, char **argv)
 
     int pin = interrupt_args.pin->ival[0];
     const char *edge_str = interrupt_args.edge->sval[0];
+    int pin_to_pulse = interrupt_args.pintopulse->ival[0];
+    int pulse_width_us = interrupt_args.pulsewidth->ival[0];
+
 
     gpio_int_type_t intr_type;
     if (strcmp(edge_str, "RISING") == 0) {
@@ -340,8 +347,9 @@ static int interrupt(int argc, char **argv)
         return 1;
     }
 
-    ESP_LOGI(TAG, "Setting interrupt on pin %d, edge: %s", pin, edge_str);
+    ESP_LOGI(TAG, "Setting interrupt on pin %d, edge: %s, to pulse pin %d for %d us", pin, edge_str, pin_to_pulse, pulse_width_us);
 
+    // Configure the interrupt pin
     gpio_config_t io_conf;
     io_conf.intr_type = intr_type;
     io_conf.mode = GPIO_MODE_INPUT;
@@ -349,6 +357,13 @@ static int interrupt(int argc, char **argv)
     io_conf.pull_down_en = 0;
     io_conf.pull_up_en = 0;
     gpio_config(&io_conf);
+
+    // Configure the pin to be pulsed
+    gpio_set_direction(pin_to_pulse, GPIO_MODE_OUTPUT);
+
+    // Store configuration for the ISR
+    interrupt_pulse_configs[pin].pin_to_pulse = pin_to_pulse;
+    interrupt_pulse_configs[pin].pulse_width_us = pulse_width_us;
 
     gpio_isr_handler_add(pin, gpio_isr_handler, (void*) (intptr_t) pin);
 
@@ -359,11 +374,13 @@ static void register_interrupt(void)
 {
     interrupt_args.pin = arg_int1(NULL, NULL, "<pin>", "GPIO pin for interrupt");
     interrupt_args.edge = arg_str1(NULL, NULL, "<RISING|FALLING|BOTH>", "Interrupt edge");
-    interrupt_args.end = arg_end(2);
+    interrupt_args.pintopulse = arg_int1(NULL, NULL, "<pintopulse>", "GPIO pin to pulse in ISR");
+    interrupt_args.pulsewidth = arg_int1(NULL, NULL, "<pulsewidth>", "Pulse width in microseconds");
+    interrupt_args.end = arg_end(4);
 
     const esp_console_cmd_t cmd = {
         .command = "interrupt",
-        .help = "Set an interrupt on a GPIO pin",
+        .help = "Set an interrupt on a GPIO pin to trigger a pulse on another pin.",
         .hint = NULL,
         .func = &interrupt,
         .argtable = &interrupt_args
@@ -1068,13 +1085,6 @@ void app_main(void)
 
     //install gpio isr service
     gpio_install_isr_service(0);
-
-    // Create esp_timer for ISR pulse
-    const esp_timer_create_args_t pulse_timer_args = {
-            .callback = &pulse_off_callback,
-            .name = "pulse_off"
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&pulse_timer_args, &pulse_off_timer));
 
     //setup pin 13 for ISR debugging
     gpio_config_t io_conf;

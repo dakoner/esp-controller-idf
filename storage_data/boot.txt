@@ -1,2 +1,3 @@
-#interrupt 35 FALLING
-#repeat 32 10 1000
+#log_level led warn
+#interrupt 35 FALLING 13 1
+#repeat 32 1 1
