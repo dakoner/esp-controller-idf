@@ -2,7 +2,7 @@ dependencies:
   cmd_system:
     dependencies: []
     source:
-      path: C:\esp\v5.5.2\esp-idf\examples\system\console\advanced\components\cmd_system
+      path: /home/davidek/.espressif/v5.5.2/esp-idf/examples/system/console/advanced/components/cmd_system
       type: local
     version: '*'
   h2zero/esp-libtelnet:
