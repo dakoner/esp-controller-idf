@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include <math.h>
 #include "argtable3/argtable3.h"
 #include "esp_system.h"
@@ -58,6 +59,8 @@ static char wifi_password[64] = {0};
 
 static const char *TAG = "led";
 
+static bool user_modified_pins[GPIO_NUM_MAX] = {false};
+
 static struct {
     struct arg_int *pin;
     struct arg_int *value;
@@ -77,10 +80,11 @@ static int pulse(int argc, char **argv)
     int value = pulse_args.value->ival[0];
     int duration = pulse_args.duration->ival[0];
     ESP_LOGI(TAG, "Pulsing pin %d to %d for %d us", pin, value, duration);
-    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+    gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT);
     gpio_set_level(pin, value);
     esp_rom_delay_us(duration);
     gpio_set_level(pin, !value);
+    user_modified_pins[pin] = true;
     return 0;
 }
 
@@ -122,8 +126,9 @@ static int level(int argc, char **argv)
         // Set level
         int value = level_args.value->ival[0];
         ESP_LOGI(TAG, "Setting pin %d to %d", pin, value);
-        gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+        gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT);
         gpio_set_level(pin, value);
+        user_modified_pins[pin] = true;
     } else {
         // Get level
         gpio_set_direction(pin, GPIO_MODE_INPUT); // Re-configure to be safe
@@ -150,6 +155,12 @@ static void register_level(void)
     ESP_ERROR_CHECK( esp_console_cmd_register(&cmd) );
 }
 
+
+static struct {
+    int frequency;
+    int duty;
+    bool active;
+} pwm_configs[GPIO_NUM_MAX] = {{0}};
 
 static struct {
     struct arg_int *pin;
@@ -212,6 +223,10 @@ static int pwm(int argc, char **argv)
     ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0, duty_val);
     ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0);
 
+    pwm_configs[pin].frequency = frequency;
+    pwm_configs[pin].duty = duty;
+    pwm_configs[pin].active = true;
+
     ESP_LOGI(TAG, "Pin: %d, Frequency: %d, Duty: %d", pin, frequency, duty);
     return 0;
 }
@@ -251,6 +266,8 @@ static int stoppwm(int argc, char **argv)
     ESP_LOGI(TAG, "Stopping pwm on pin: %d", pin);
     ledc_stop(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0, 0);
     ESP_ERROR_CHECK(gpio_reset_pin(pin) );
+    pwm_configs[pin].active = false;
+    user_modified_pins[pin] = false;
     return 0;
 }
 
@@ -292,6 +309,7 @@ static void gpio_task_example(void* arg)
 typedef struct {
     int pin_to_pulse;
     int pulse_width_us;
+    int edge_type; // 0=None, 1=Rising, 2=Falling, 3=Both
 } interrupt_pulse_config_t;
 static interrupt_pulse_config_t interrupt_pulse_configs[GPIO_NUM_MAX] = {{0}};
 
@@ -336,12 +354,16 @@ static int interrupt(int argc, char **argv)
 
 
     gpio_int_type_t intr_type;
+    int edge_type_val = 0;
     if (strcmp(edge_str, "RISING") == 0) {
         intr_type = GPIO_INTR_POSEDGE;
+        edge_type_val = 1;
     } else if (strcmp(edge_str, "FALLING") == 0) {
         intr_type = GPIO_INTR_NEGEDGE;
+        edge_type_val = 2;
     } else if (strcmp(edge_str, "BOTH") == 0) {
         intr_type = GPIO_INTR_ANYEDGE;
+        edge_type_val = 3;
     } else {
         ESP_LOGE(TAG, "Invalid interrupt type. Use RISING, FALLING or BOTH");
         return 1;
@@ -364,6 +386,7 @@ static int interrupt(int argc, char **argv)
     // Store configuration for the ISR
     interrupt_pulse_configs[pin].pin_to_pulse = pin_to_pulse;
     interrupt_pulse_configs[pin].pulse_width_us = pulse_width_us;
+    interrupt_pulse_configs[pin].edge_type = edge_type_val;
 
     gpio_isr_handler_add(pin, gpio_isr_handler, (void*) (intptr_t) pin);
 
@@ -410,6 +433,9 @@ static int stopinterrupt(int argc, char **argv)
     // Disable interrupt type
     gpio_set_intr_type(pin, GPIO_INTR_DISABLE);
 
+    interrupt_pulse_configs[pin].edge_type = 0;
+    interrupt_pulse_configs[pin].pulse_width_us = 0;
+
     return 0;
 }
 
@@ -434,6 +460,7 @@ static void register_stopinterrupt(void)
 static TimerHandle_t throb_timer = NULL;
 static uint32_t throb_step = 0;
 static int throb_period_s = 0;
+static int throb_pins[3] = {0};
 
 static struct {
     struct arg_int *period;
@@ -490,6 +517,13 @@ static int throb(int argc, char **argv)
     int pin2 = throb_args.pin2->ival[0];
     int pin3 = throb_args.pin3->ival[0];
 
+    throb_pins[0] = pin1;
+    throb_pins[1] = pin2;
+    throb_pins[2] = pin3;
+
+    user_modified_pins[pin1] = true;
+    user_modified_pins[pin2] = true;
+    user_modified_pins[pin3] = true;
 
     // Timer
     ledc_timer_config_t ledc_timer = {
@@ -544,6 +578,8 @@ static int stopthrob(int argc, char **argv)
     }
     xTimerDelete(throb_timer, 0);
     throb_timer = NULL;
+    throb_period_s = 0;
+    throb_pins[0] = 0; throb_pins[1] = 0; throb_pins[2] = 0;
 
     ledc_stop(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_2, 0);
     ledc_stop(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_3, 0);
@@ -581,17 +617,20 @@ static void register_stopthrob(void)
     ESP_ERROR_CHECK(esp_console_cmd_register(&cmd));
 }
 
-static TimerHandle_t repeat_timer = NULL;
+static TimerHandle_t repeat_timers[GPIO_NUM_MAX] = { NULL };
 static struct {
-    int pin;
     int duration_us;
-} repeat_data;
+    int frequency;
+} repeat_pulse_data[GPIO_NUM_MAX] = {{0}};
 
 static void repeat_timer_callback(TimerHandle_t xTimer)
 {
-    gpio_set_level(repeat_data.pin, 1);
-    esp_rom_delay_us(repeat_data.duration_us);
-    gpio_set_level(repeat_data.pin, 0);
+    uint32_t pin = (uint32_t) pvTimerGetTimerID(xTimer);
+    if (pin < GPIO_NUM_MAX) {
+        gpio_set_level(pin, 1);
+        esp_rom_delay_us(repeat_pulse_data[pin].duration_us);
+        gpio_set_level(pin, 0);
+    }
 }
 
 static struct {
@@ -609,12 +648,17 @@ static int repeat(int argc, char **argv)
         return 1;
     }
 
-    if (repeat_timer != NULL) {
-        ESP_LOGW(TAG, "Repeat timer already running, stop it first");
+    int pin = repeat_args.pin->ival[0];
+    if (pin >= GPIO_NUM_MAX) {
+        ESP_LOGE(TAG, "Invalid pin number: %d", pin);
+        return 1;
+    }
+
+    if (repeat_timers[pin] != NULL) {
+        ESP_LOGW(TAG, "Repeat timer already running on pin %d, stop it first", pin);
         return 0;
     }
 
-    int pin = repeat_args.pin->ival[0];
     int frequency = repeat_args.frequency->ival[0];
     int duration = repeat_args.duration->ival[0];
 
@@ -623,13 +667,14 @@ static int repeat(int argc, char **argv)
          return 1;
     }
 
-    repeat_data.pin = pin;
-    repeat_data.duration_us = duration;
+    repeat_pulse_data[pin].duration_us = duration;
+    repeat_pulse_data[pin].frequency = frequency;
 
     ESP_LOGI(TAG, "Starting repeat pulse on pin %d, freq %d Hz, dur %d us", pin, frequency, duration);
 
-    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+    gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT);
     gpio_set_level(pin, 0);
+    user_modified_pins[pin] = true;
 
     int period_ms = 1000 / frequency;
     if (period_ms == 0) period_ms = 1; // Minimum 1ms resolution for software timers
@@ -637,16 +682,20 @@ static int repeat(int argc, char **argv)
     TickType_t period_ticks = pdMS_TO_TICKS(period_ms);
     if (period_ticks == 0) period_ticks = 1;
 
-    repeat_timer = xTimerCreate("repeat_timer", period_ticks, pdTRUE, NULL, repeat_timer_callback);
-    if (repeat_timer == NULL) {
-        ESP_LOGE(TAG, "Failed to create repeat timer");
+    // Create a unique name for the timer
+    char timer_name[32];
+    snprintf(timer_name, sizeof(timer_name), "repeat_timer_%d", pin);
+
+    repeat_timers[pin] = xTimerCreate(timer_name, period_ticks, pdTRUE, (void*) (intptr_t) pin, repeat_timer_callback);
+    if (repeat_timers[pin] == NULL) {
+        ESP_LOGE(TAG, "Failed to create repeat timer for pin %d", pin);
         return 1;
     }
 
-    if (xTimerStart(repeat_timer, 0) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to start repeat timer");
-        xTimerDelete(repeat_timer, 0);
-        repeat_timer = NULL;
+    if (xTimerStart(repeat_timers[pin], 0) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to start repeat timer for pin %d", pin);
+        xTimerDelete(repeat_timers[pin], 0);
+        repeat_timers[pin] = NULL;
         return 1;
     }
 
@@ -670,34 +719,58 @@ static void register_repeat(void)
     ESP_ERROR_CHECK(esp_console_cmd_register(&cmd));
 }
 
+static struct {
+    struct arg_int *pin;
+    struct arg_end *end;
+} stoprepeat_args;
+
 static int stoprepeat(int argc, char **argv)
 {
-    ESP_LOGI(TAG, "Stopping repeat");
-    if (repeat_timer == NULL) {
-        ESP_LOGW(TAG, "Repeat timer is not running");
+    int nerrors = arg_parse(argc, argv, (void **) &stoprepeat_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, stoprepeat_args.end, argv[0]);
+        return 1;
+    }
+    int pin = stoprepeat_args.pin->ival[0];
+
+    if (pin >= GPIO_NUM_MAX) {
+        ESP_LOGE(TAG, "Invalid pin number: %d", pin);
+        return 1;
+    }
+
+    ESP_LOGI(TAG, "Stopping repeat on pin %d", pin);
+    if (repeat_timers[pin] == NULL) {
+        ESP_LOGW(TAG, "Repeat timer is not running on pin %d", pin);
         return 0;
     }
 
-    if (xTimerStop(repeat_timer, 0) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to stop repeat timer");
+    if (xTimerStop(repeat_timers[pin], 0) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to stop repeat timer on pin %d", pin);
         return 1;
     }
-    xTimerDelete(repeat_timer, 0);
-    repeat_timer = NULL;
+    xTimerDelete(repeat_timers[pin], 0);
+    repeat_timers[pin] = NULL;
     
+    repeat_pulse_data[pin].frequency = 0;
+    repeat_pulse_data[pin].duration_us = 0;
+
     // Ensure pin is low
-    gpio_set_level(repeat_data.pin, 0);
+    gpio_set_level(pin, 0);
+    user_modified_pins[pin] = true;
 
     return 0;
 }
 
 static void register_stoprepeat(void)
 {
+    stoprepeat_args.pin = arg_int1(NULL, NULL, "<pin>", "GPIO pin to stop repeat on");
+    stoprepeat_args.end = arg_end(1);
     const esp_console_cmd_t cmd = {
         .command = "stoprepeat",
-        .help = "Stop the repeat command",
+        .help = "Stop the repeat command for a specific pin",
         .hint = NULL,
         .func = &stoprepeat,
+        .argtable = &stoprepeat_args
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&cmd));
 }
@@ -761,6 +834,73 @@ static void register_mem(void)
         .hint = NULL,
         .func = &mem_read,
         .argtable = &mem_args
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&cmd));
+}
+
+static int printsettings(int argc, char **argv)
+{
+    // Iterate over all GPIOs
+    for (int i = 0; i < GPIO_NUM_MAX; i++) {
+        // Check for interrupts (Input pins mostly)
+        if (interrupt_pulse_configs[i].edge_type > 0) {
+            const char *edge_str = "RISING";
+            if (interrupt_pulse_configs[i].edge_type == 2) edge_str = "FALLING";
+            if (interrupt_pulse_configs[i].edge_type == 3) edge_str = "BOTH";
+            
+            printf("interrupt %d %s %d %d\n", i, edge_str, 
+                   interrupt_pulse_configs[i].pin_to_pulse, 
+                   interrupt_pulse_configs[i].pulse_width_us);
+        }
+
+        if (GPIO_IS_VALID_OUTPUT_GPIO(i)) {
+            // Check for PWM
+            if (pwm_configs[i].active) {
+                printf("pwm %d %d %d\n", i, pwm_configs[i].frequency, pwm_configs[i].duty);
+                continue; // Skip level check if PWM is active
+            }
+
+            // Check for Repeat
+            if (repeat_timers[i] != NULL) {
+                printf("repeat %d %d %d\n", i, repeat_pulse_data[i].frequency, repeat_pulse_data[i].duration_us);
+                continue;
+            }
+            
+            // Check Throb pins
+            bool is_throb = false;
+            if (throb_timer != NULL) {
+                for (int k=0; k<3; k++) {
+                    if (throb_pins[k] == i) {
+                        is_throb = true;
+                        break;
+                    }
+                }
+            }
+            if (is_throb) continue;
+
+            // Print level
+            if (user_modified_pins[i]) {
+                int level = gpio_get_level(i);
+                printf("level %d %d\n", i, level);
+            }
+        }
+    }
+
+    // Print Throb command
+    if (throb_timer != NULL) {
+        printf("throb %d %d %d %d\n", throb_period_s, throb_pins[0], throb_pins[1], throb_pins[2]);
+    }
+    
+    return 0;
+}
+
+static void register_printsettings(void)
+{
+    const esp_console_cmd_t cmd = {
+        .command = "printsettings",
+        .help = "Print current settings as commands",
+        .hint = NULL,
+        .func = &printsettings,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&cmd));
 }
@@ -1137,6 +1277,7 @@ void app_main(void)
     register_stoprepeat();
     register_info();
     register_mem();
+    register_printsettings();
     console_register_wifi();
 
     mount_storage();
