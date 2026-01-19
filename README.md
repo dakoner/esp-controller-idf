@@ -1,156 +1,83 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C5 | ESP32-C6 | ESP32-C61 | ESP32-H2 | ESP32-H21 | ESP32-H4 | ESP32-P4 | ESP32-S2 | ESP32-S3 |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | --------- | -------- | --------- | -------- | -------- | -------- | -------- |
+# LED Controller Console (ESP-IDF)
 
-# Basic Console Example (`esp_console_repl`)
+This project is a console application for the ESP32 that provides precise control over GPIO pins for LED applications. It supports various modes including single pulses, PWM, hardware interrupts, and synchronized "throb" effects. The application runs a REPL (Read-Eval-Print Loop) over UART/USB.
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+## Features
 
-This example illustrates the usage of the REPL (Read-Eval-Print Loop) APIs of the [Console Component](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/console.html#console) to create an interactive shell on the ESP chip. The interactive shell running on the ESP chip can then be controlled/interacted with over a serial interface. This example supports UART and USB interfaces.
+- **Pulse Control**: Generate precise single pulses on GPIO pins.
+- **PWM**: Hardware-timed PWM generation with adjustable frequency and duty cycle.
+- **Interrupt Triggers**: Configure GPIO interrupts to trigger pulses on other pins with microsecond precision.
+- **Repeating Pulses**: Generate repeating pulse trains using software timers.
+- **Throb Effect**: Synchronized sinusoidal fading effect across 3 channels.
+- **WiFi Info**: Display current WiFi connection details.
+- **System Info**: Memory and GPIO status commands.
+- **Boot Script**: Automatically executes commands from `boot.txt` on the storage partition at startup.
 
-The interactive shell implemented in this example contains a wide variety of commands, and can act as a basis for applications that require a command-line interface (CLI).
+## Command Reference
 
-Compared to the [advanced console example](../advanced), this example requires less code to initialize and run the console. `esp_console_repl` API handles most of the details. If you'd like to customize the way console works (for example, process console commands in an existing task), please check the advanced console example.
+The following commands are available in the console:
 
-## How to use example
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `pulse` | `<pin> <value> <duration>` | Pulse a GPIO pin to a value (0 or 1) for a specific duration in microseconds. |
+| `level` | `<pin> [value]` | Set a GPIO pin to a specific level (0 or 1). If `value` is omitted, prints the current level. |
+| `pwm` | `<pin> <frequency> <duty>` | Start PWM on a pin. `frequency` (1-1,000,000 Hz), `duty` (0-99 %). |
+| `stoppwm` | `<pin>` | Stop PWM output on a specific pin. |
+| `interrupt` | `<pin> <edge> <target_pin> <width>` | Configure an interrupt on `<pin>` (edges: `RISING`, `FALLING`, `BOTH`) to trigger a pulse on `<target_pin>` for `<width>` microseconds. |
+| `stopinterrupt` | `<pin>` | Remove the interrupt handler and configuration from a specific pin. |
+| `repeat` | `<pin> <frequency> <duration>` | Start a repeating pulse train on a pin. `frequency` in Hz, `duration` in microseconds. |
+| `stoprepeat` | `<pin>` | Stop the repeating pulse train on a specific pin. |
+| `throb` | `<period> <pin1> <pin2> <pin3>` | Start a synchronized sinusoidal "throb" effect on 3 pins with a specified period (seconds). |
+| `stopthrob` | | Stop the active throb effect. |
+| `info` | | Display current GPIO configuration and status. |
+| `mem` | `<address>` | Read and display 4 bytes from a physical memory address. |
+| `wifi` | | Display current Wi-Fi status, MAC address, SSID, RSSI, and IP addresses. |
+| `help` | | Print the list of all registered commands. |
 
-This example can be used on boards with UART and USB interfaces. The sections below explain how to set up the board and configure the example.
+## Storage and Configuration
 
-### Using with UART
+The application mounts a FATFS partition at `/storage` (if configured in the partition table).
 
-When UART interface is used, this example should run on any commonly available Espressif development board. UART interface is enabled by default (`CONFIG_ESP_CONSOLE_UART_DEFAULT` option in menuconfig). No extra configuration is required.
+- **boot.txt**: If this file exists, the application reads it at startup and executes each line as a console command.
+- **password.txt**: Stores the Wi-Fi password. If missing, the app may prompt for it.
 
-### Using with USB_SERIAL_JTAG
+## Hardware Setup
 
-*NOTE: We recommend to disable the secondary console output on chips with USB_SERIAL_JTAG since the secondary serial is output-only and would not be very useful when using a console application. This is why the secondary console output is deactivated per default (CONFIG_ESP_CONSOLE_SECONDARY_NONE=y)*
+- **LEDs**: Connect LEDs (with appropriate current-limiting resistors) to the GPIO pins you intend to control.
+- **Inputs**: For interrupt commands, connect switches or signal sources to the input pins.
 
-On chips with USB_SERIAL_JTAG peripheral, console example can be used over the USB serial port.
+## Build and Flash
 
-* First, connect the USB cable to the USB_SERIAL_JTAG interface.
-* Second, run `idf.py menuconfig` and enable `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG` option.
+This project uses the Espressif IoT Development Framework (ESP-IDF).
 
-For more details about connecting and configuring USB_SERIAL_JTAG (including pin numbers), see the IDF Programming Guide:
-* [ESP32-C3 USB_SERIAL_JTAG](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/api-guides/usb-serial-jtag-console.html)
-* [ESP32-S3 USB_SERIAL_JTAG](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/usb-serial-jtag-console.html)
+1.  **Build the project**:
+    ```bash
+    idf.py build
+    ```
 
-### Using with USB CDC (USB_OTG peripheral)
+2.  **Flash and Monitor**:
+    ```bash
+    idf.py -p PORT flash monitor
+    ```
+    (Replace `PORT` with your serial port name, e.g., `COM3`, `/dev/ttyUSB0`)
 
-USB_OTG peripheral can also provide a USB serial port which works with this example.
+    To exit the monitor, type `Ctrl-]`.
 
-* First, connect the USB cable to the USB_OTG peripheral interface.
-* Second, run `idf.py menuconfig` and enable `CONFIG_ESP_CONSOLE_USB_CDC` option.
+## Example Usage Session
 
-For more details about connecting and configuring USB_OTG (including pin numbers), see the IDF Programming Guide:
-* [ESP32-S2 USB_OTG](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s2/api-guides/usb-otg-console.html)
-* [ESP32-S3 USB_OTG](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/usb-otg-console.html)
+```text
+> help
+... list of commands ...
 
-### Other configuration options
+> level 2 1
+I (1234) led: Setting pin 2 to 1
 
-This example has an option to store the command history in Flash. This option is enabled by default.
+> pulse 4 1 50000
+I (5678) led: Pulsing pin 4 to 1 for 50000 us
 
-To disable this, run `idf.py menuconfig` and disable `CONFIG_CONSOLE_STORE_HISTORY` option.
+> pwm 5 1000 50
+I (9101) led: Pin: 5, Frequency: 1000, Duty: 50
 
-### Build and Flash
-
-Build the project and flash it to the board, then run monitor tool to view serial output:
-
+> interrupt 0 RISING 2 1000
+I (1121) led: Setting interrupt on pin 0, edge: RISING, to pulse pin 2 for 1000 us
 ```
-idf.py -p PORT flash monitor
-```
-
-(Replace PORT with the name of the serial port to use.)
-
-(To exit the serial monitor, type ``Ctrl-]``.)
-
-See the Getting Started Guide for full steps to configure and use ESP-IDF to build projects.
-
-## Example Output
-
-Enter the `help` command get a full list of all available commands. The following is a sample session of the Console Example where a variety of commands provided by the Console Example are used.
-
-On ESP32, GPIO15 may be connected to GND to remove the boot log output.
-
-```
-This is an example of ESP-IDF console component.
-Type 'help' to get the list of commands.
-Use UP/DOWN arrows to navigate through command history.
-Press TAB when typing command name to auto-complete.
-[esp32]> help
-help
-  Print the list of registered commands
-
-free
-  Get the total size of heap memory available
-
-restart
-  Restart the program
-
-deep_sleep  [-t <t>] [--io=<n>] [--io_level=<0|1>]
-  Enter deep sleep mode. Two wakeup modes are supported: timer and GPIO. If no
-  wakeup option is specified, will sleep indefinitely.
-  -t, --time=<t>  Wake up time, ms
-      --io=<n>  If specified, wakeup using GPIO with given number
-  --io_level=<0|1>  GPIO level to trigger wakeup
-
-join  [--timeout=<t>] <ssid> [<pass>]
-  Join WiFi AP as a station
-  --timeout=<t>  Connection timeout, ms
-        <ssid>  SSID of AP
-        <pass>  PSK of AP
-
-[esp32]> free
-257200
-[esp32]> deep_sleep -t 1000
-I (146929) deep_sleep: Enabling timer wakeup, timeout=1000000us
-I (619) heap_init: Initializing. RAM available for dynamic allocation:
-I (620) heap_init: At 3FFAE2A0 len 00001D60 (7 KiB): DRAM
-I (626) heap_init: At 3FFB7EA0 len 00028160 (160 KiB): DRAM
-I (645) heap_init: At 3FFE0440 len 00003BC0 (14 KiB): D/IRAM
-I (664) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM
-I (684) heap_init: At 40093EA8 len 0000C158 (48 KiB): IRAM
-
-This is an example of ESP-IDF console component.
-Type 'help' to get the list of commands.
-Use UP/DOWN arrows to navigate through command history.
-Press TAB when typing command name to auto-complete.
-[esp32]> join --timeout 10000 test_ap test_password
-I (182639) connect: Connecting to 'test_ap'
-I (184619) connect: Connected
-[esp32]> free
-212328
-[esp32]> restart
-I (205639) restart: Restarting
-I (616) heap_init: Initializing. RAM available for dynamic allocation:
-I (617) heap_init: At 3FFAE2A0 len 00001D60 (7 KiB): DRAM
-I (623) heap_init: At 3FFB7EA0 len 00028160 (160 KiB): DRAM
-I (642) heap_init: At 3FFE0440 len 00003BC0 (14 KiB): D/IRAM
-I (661) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM
-I (681) heap_init: At 40093EA8 len 0000C158 (48 KiB): IRAM
-
-This is an example of ESP-IDF console component.
-Type 'help' to get the list of commands.
-Use UP/DOWN arrows to navigate through command history.
-Press TAB when typing command name to auto-complete.
-[esp32]>
-
-```
-
-## Troubleshooting
-
-### Line Endings
-
-The line endings in the Console Example are configured to match particular serial monitors. Therefore, if the following log output appears, consider using a different serial monitor (e.g. Putty for Windows) or modify the example's [UART configuration](#Configuring-UART-and-VFS).
-
-```
-This is an example of ESP-IDF console component.
-Type 'help' to get the list of commands.
-Use UP/DOWN arrows to navigate through command history.
-Press TAB when typing command name to auto-complete.
-Your terminal application does not support escape sequences.
-Line editing and history features are disabled.
-On Windows, try using Windows Terminal or Putty instead.
-esp32>
-```
-
-### Escape Sequences on Windows 10
-
-When using the default command line or PowerShell on Windows 10, you may see a message indicating that the console does not support escape sequences, as shown in the above output. To avoid such issues, it is recommended to run the serial monitor under [Windows Terminal](https://en.wikipedia.org/wiki/Windows_Terminal), which supports all required escape sequences for the app, unlike the default terminal. The main escape sequence of concern is the Device Status Report (`0x1b[5n`), which is used to check terminal capabilities. Any response to this sequence indicates support. This should not be an issue on Windows 11, where Windows Terminal is the default.
